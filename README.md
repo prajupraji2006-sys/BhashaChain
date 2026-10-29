@@ -54,6 +54,10 @@ npm.cmd run provider:access
 
 The command confirms the authorization by contract readback. Set `PROVIDER_ACTION` to `revoke` and rerun it to block that provider from creating new records. It only runs against `localhost`. The backend will not persist a chain-enabled registration unless its transaction, event, content hash, version, and on-chain issuer match verify. `BLOCKCHAIN_PRIVATE_KEY` is an optional server-side signer for other explicitly configured environments. Never use a real wallet key here. Restart the API after changing `.env`.
 
+For a local Hardhat-backed API session, set `BLOCKCHAIN_MODE=required`, `BLOCKCHAIN_RPC_URL=http://127.0.0.1:8545`, `BLOCKCHAIN_CHAIN_ID=31337`, `RIGHTS_LEDGER_ADDRESS` to the address printed by the current deployment, and `BLOCKCHAIN_SENDER_ADDRESS` to the provider account authorized above. The backend health endpoint performs live RPC, chain ID, bytecode, RightsLedger ABI, and provider-authorization reads. The Overview page shows these diagnostics; an unset or failed check is shown as unknown/false rather than inferred from non-empty settings. The example environment file contains only the local RPC and chain ID defaults; its contract address and signer remain blank until deployment.
+
+Hardhat's local chain and its accounts are development-only. Contract state is lost when that node is restarted; redeploy and re-authorize the provider, then update the local contract address. Do not use the local address or development accounts on a public network.
+
 Licence updates and revocations require the configured signer to be the contract issuer. If chain mode is explicitly disabled, records remain local and are reported as not chain-verified. Do not expose the development API beyond loopback. The V2 ledger is not upgradeable: redeploying it does not migrate existing chain records. Back up SQLite before a ledger reset; previously anchored rows will need a deliberate data migration before required-chain checks can accept them on the new address.
 
 ## Run checks
@@ -72,17 +76,36 @@ The three QpiAI Quantum cloud tests are skipped by default because they authenti
 
 The Optimizer accepts required languages, budget, mandatory dataset IDs, geography, and intended purpose. It filters actual SQLite records through the local signature and rights policy before either solver runs. The QpiAI result is labelled with its SDK execution mode and diagnostics; the classical baseline remains separately reported. The baseline regression fixture selects `bn-open-01` and `ta-commercial-03` for a total cost of 280 under budget 1000.
 
+The separate Facility Dispatch page calls `POST /api/qubo/dispatch`. It models one-facility assignments, capacity slack, and chemistry mismatch penalties as a QUBO. QpiAI Opt runs only with the documented local mode and `allow_platform=False`; if that fails, small problems may use a clearly labeled exhaustive classical QUBO fallback. See [the dispatch integration guide](docs/qpi_ai_opt/README.md) for the request format, solver semantics, safe logs, and synthetic test evidence.
+
 Install the pinned optional adapter with `python -m pip install -r backend/requirements-qpiai-opt.txt`, then set `QPIAI_OPT_API_KEY` only in `.env` to enable QpiAI Opt. The app requests the documented local SDK mode; the SDK verifies the key online but computes locally, with platform execution and fallback disabled. The app does not switch to another solver and call it QpiAI Opt when the SDK or authentication fails. See [docs/qpiai-opt-integration.md](docs/qpiai-opt-integration.md).
 
 ## Architecture and demo
 
 - `backend/app`: FastAPI, SQLite, Ed25519 signatures, rights checks, chain adapter, and audit.
-- `optimizer`: QpiAI Opt local adapter and independent classical baseline.
+- `optimizer`: QpiAI Opt local adapter, facility dispatch QUBO, and independent classical baselines.
 - `contracts`: Solidity `RightsLedger`, Hardhat deployment and tests.
 - `frontend`: React workflows for registry, rights checks, optimizer, Quantum lab, and audit evidence.
 - `docs/`: setup, API, security, architecture, integration notes, and a judge demo sequence.
 
-See [docs/demo-script.md](docs/demo-script.md), [docs/api-contract.md](docs/api-contract.md), and [contracts/README.md](contracts/README.md). Raw corpora, private information, and API credentials stay off-chain. On-chain records contain only hashes, permissions, issuer address, version, expiry, status, and timestamps.
+See [docs/demo-script.md](docs/demo-script.md), [docs/api-contract.md](docs/api-contract.md), [docs/qpi_ai_opt/README.md](docs/qpi_ai_opt/README.md), and [contracts/README.md](contracts/README.md). Raw corpora, private information, and API credentials stay off-chain. On-chain records contain only hashes, permissions, issuer address, version, expiry, status, and timestamps.
+
+## Dataset Rights Lab: Kannada news CSV demo
+
+The Lab accepts the dataset card's CSV structure (`headline`, `label`) and imports a 20–50 row demonstration sample. It previews up to 10 rows, shows filename/row count/columns/source URL, and computes the source file's SHA-256 in the browser. The mirrored [Hugging Face dataset card](https://huggingface.co/datasets/gaurvar/kannada_news) reports Kannada headlines, around 6,300 records, train/validation CSV files, and `CC BY-SA 4.0`; it also marks source provenance information as incomplete. The [Kaggle source listing](https://www.kaggle.com/datasets/disisbig/kannada-news-dataset) and the mirror's claims are not independent proof of the dataset contributors' rights. Do not characterize the dataset as illegally used or as having fully verified provenance.
+
+CC BY-SA 4.0 allows reuse for commercial purposes when its conditions are followed. Attribution is required, and ShareAlike terms apply when adapted material is shared; it is not a blanket prohibition on commercial use. See the [Creative Commons deed](https://creativecommons.org/licenses/by-sa/4.0/deed.en) and [legal code](https://creativecommons.org/licenses/by-sa/4.0/legalcode). The app does not determine which individual articles or contributions are covered by the reported dataset licence.
+
+### Run the demonstration
+
+1. Start FastAPI and the Vite development server using the local commands above.
+2. Open **Dataset Rights Lab** and select the downloaded `train.csv` or `valid.csv`. The browser validates the `headline` and `label` columns, previews up to 10 records, and calculates SHA-256. No source CSV is part of this repository.
+3. Import a 20–50 row sample. The local-development UI opts into copying the original file under `backend/private_data/`; uncheck the box to send only the sample metadata and rows. The directory is Git-ignored. A remotely configured backend does not upload the full CSV by default. Server-side original storage verifies the hash, CSV headers, row count, and sample rows.
+4. Treat all values prefilled from the source card as `UNVERIFIED` / `NEEDS_REVIEW`. The sample is stored as evidence intake, separate from the signed provider registry. Evidence can be updated with notes/statuses, but those operator assertions are not independent rights verification.
+5. A review-complete record can be prepared for provider registration. Verify the evidence and fill the actual licence, territory, expiry, provider, and intended-use terms before submitting. New records that attach rights evidence use signed schema v3; existing schema v1/v2 signatures remain readable. The usual authorized-provider and verified-chain registration requirements still apply. The Lab reports `ALLOWED` only after evidence checks, the matching signed rights record, and verified on-chain state all pass. Without those, the final outcome remains `NEEDS_REVIEW` or `REJECTED`.
+6. The synthetic benchmark runs five clearly marked fixtures: permitted evidence, incomplete evidence, explicit commercial prohibition, expiry, and revocation. Its `ALLOWED` case demonstrates the evidence-policy layer only; it does not create a chain transaction or enable training. The `/api/rights-lab/accepted-corpus` endpoint supplies only rows whose decision is `ALLOWED` and whose signed record and chain are verified. Rejected and review-pending rows cannot enter it.
+
+The additive SQLite migration creates `rights_lab_datasets` and `rights_lab_decisions` tables at startup; existing tables and records are left intact. Imported sample rows and optional full CSV copies are local data, not Git content. Decision manifests include the source file SHA-256, purpose, decision, reasons, policy version, and timestamp. Manifest content hashes are deterministic. The Lab is a rights-governance prototype, not legal advice or a legal authority.
 
 ## Hosting
 
@@ -100,11 +123,20 @@ Use `.env.example` as the local template. For a separately hosted backend, confi
 | `ISSUER_KEY_ID` | Optional | Stable identifier for the local signing key. |
 | `TRUSTED_ISSUER_PUBLIC_KEYS_JSON` | Optional | JSON mapping of trusted issuer key IDs to public keys. |
 | `CORS_ORIGINS` | Production | Comma-separated exact website origins, including scheme; configure the deployed Netlify origin. |
-| `DATABASE_URL` / `DATABASE_PATH` | Always | Current app uses SQLite. The database must be on durable storage and included in backups for production. |
-| `BLOCKCHAIN_MODE` | Always | `disabled` is off-chain mode; use `required` only after a deployed ledger and provider authorization are configured. |
-| `BLOCKCHAIN_RPC_URL`, `BLOCKCHAIN_CHAIN_ID`, `RIGHTS_LEDGER_ADDRESS` | Chain mode | Backend connection details for the configured EVM ledger. |
-| `BLOCKCHAIN_SENDER_ADDRESS` or `BLOCKCHAIN_PRIVATE_KEY` | Chain writes | Configure the authorized provider signer server-side; never expose a private key to the browser. |
+| `DATABASE_PATH` | Production with disk | Set to `/var/data/bhashachain.db` when a Render disk is mounted at `/var/data`. Without it, SQLite defaults to an ephemeral project path. `DATABASE_URL` supports SQLite paths only. |
+| `BLOCKCHAIN_MODE` | Always | Render sets `required`; keep this mode for production rights checks and writes. |
+| `BLOCKCHAIN_RPC_URL`, `BLOCKCHAIN_CHAIN_ID`, `RIGHTS_LEDGER_ADDRESS` | Required chain mode | Must identify the already deployed, reachable production EVM ledger, not local Hardhat. |
+| `BLOCKCHAIN_PRIVATE_KEY` or `BLOCKCHAIN_SENDER_ADDRESS` | Required chain writes | The backend signer must be authorized as a provider on the contract. Keep any private key in Render's secret environment, never in the browser. |
 | `QPIAI_OPT_API_KEY` | Optional | Enables authenticated local QpiAI Opt; hosted platform solving is not enabled by this configuration. |
 | `QCLOUD_API_KEY` | Optional | Quantum integration credential; configure only when those features are intentionally used. |
 
-The current `render.yaml` does not provision durable SQLite storage or a managed database. Render's free service filesystem is ephemeral, so restarts or redeploys can lose registry, audit, and decision data. Select and validate durable storage before production use. `CORS_ORIGINS` and `QPIAI_OPT_API_KEY` are manual Render settings: enter the exact Netlify origin and, only if enabling the QpiAI local optimizer, configure its server-side credential. The blueprint installs the pinned QpiAI Opt adapter but does not enable hosted platform solving. Netlify must separately set `VITE_API_BASE_URL` to the backend HTTPS URL. `frontend/.env.production.example` is a placeholder, not a deployable URL.
+The current `render.yaml` uses a free service and does not provision durable SQLite storage. Render services have ephemeral filesystems, so restarts, spin-downs, or redeploys can lose registry, audit, and decision data. The app uses SQLite only; it does not currently accept a PostgreSQL URL. Before production use, choose one of these paths:
+
+- **Persistent disk:** upgrade the Render web service to a paid plan, attach a disk mounted at `/var/data`, then set `DATABASE_PATH=/var/data/bhashachain.db` in the Render environment. Only files under the mount path persist. Add backups and test restore before storing important records.
+- **Managed PostgreSQL:** the current backend cannot use it directly. A deliberate database-layer migration from SQLite to PostgreSQL, migration of existing data, and regression tests are required before configuring a PostgreSQL connection URL. Do not put a PostgreSQL URL into `DATABASE_URL` today; the application interprets it as a local SQLite path.
+
+The blueprint sets `BLOCKCHAIN_MODE=required` so chain-dependent decisions and writes fail closed when the ledger is missing or unavailable. Production backend configuration also rejects loopback RPC endpoints and Hardhat chain ID `31337`. After selecting durable storage, configure `DATABASE_PATH=/var/data/bhashachain.db` if using the disk instructions above. Configure `BLOCKCHAIN_RPC_URL`, `BLOCKCHAIN_CHAIN_ID`, `RIGHTS_LEDGER_ADDRESS`, and either `BLOCKCHAIN_PRIVATE_KEY` or `BLOCKCHAIN_SENDER_ADDRESS` in Render's protected environment settings. The RPC and contract must refer to an already deployed, reachable non-local chain, and the transaction signer must already have provider permission on that contract. Do not use the local Hardhat RPC in production. With a required chain unavailable, local seeded/off-chain records are not verified and registration, updates, and revocation cannot be trusted. The `/health` endpoint reports chain state separately; `status: ok` means the API process and database are up, not that the chain is connected.
+
+In Render, create the web service from `render.yaml`, then set the manual variables under the service's Environment page. Keep `APP_ENV=production`; generate `API_ACCESS_TOKEN` and `ISSUER_SIGNING_SECRET` there or use Render's generated secret values. Set `CORS_ORIGINS` to the exact final Netlify origin (for example, `https://your-site.netlify.app`, without a trailing slash). Store RPC credentials and any provider private key only in Render's protected variables. Do not paste secrets into the Blueprint file or GitHub.
+
+`CORS_ORIGINS` and `QPIAI_OPT_API_KEY` are manual Render settings: enter the exact Netlify origin and, only if enabling the QpiAI local optimizer, configure its server-side credential. The blueprint installs the pinned QpiAI Opt adapter but does not enable hosted platform solving. Netlify must separately set `VITE_API_BASE_URL` to the backend HTTPS URL. `frontend/.env.production.example` is a placeholder, not a deployable URL.

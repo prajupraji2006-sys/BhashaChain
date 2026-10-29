@@ -14,6 +14,7 @@ from ..config import LOCAL_SIGNER_KEY_ID, SIGNING_SECRET, TRUSTED_ISSUER_PUBLIC_
 
 V1_KEYS = ("dataset_id", "content_hash", "language", "licence_version", "issuer", "purposes", "regions", "derivatives_allowed", "redistribution_allowed", "expires_at", "licensing_cost", "active")
 V2_KEYS = V1_KEYS + ("record_id", "record_schema_version", "record_version", "issued_at", "updated_at", "issuer_key_id", "signature_algorithm", "revocation_status", "revoked_at")
+V3_KEYS = V2_KEYS + ("rights_evidence",)
 
 
 def _private_key():
@@ -49,6 +50,8 @@ def canonical_payload(d):
         keys = V1_KEYS
     elif schema == 2:
         keys = V2_KEYS
+    elif schema == 3:
+        keys = V3_KEYS
     else:
         raise ValueError("Unsupported rights-record schema version")
     return json.dumps({key: d.get(key) for key in keys}, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
@@ -58,7 +61,7 @@ def sign_dataset(d):
     """Attach a v2 service-signed record while preserving caller metadata."""
     now = datetime.now(timezone.utc).isoformat()
     d.setdefault("record_id", str(uuid.uuid4()))
-    d.setdefault("record_schema_version", 2)
+    d.setdefault("record_schema_version", 3 if "rights_evidence" in d else 2)
     d.setdefault("record_version", 1)
     d.setdefault("issued_at", d.get("created_at", now))
     d.setdefault("updated_at", now)

@@ -6,13 +6,23 @@ the contract state and expected event. All chain failures are returned explicitl
 from __future__ import annotations
 
 import json
+from ipaddress import ip_address
 from datetime import datetime, timezone
-from ..config import BLOCKCHAIN_CHAIN_ID, BLOCKCHAIN_MODE, BLOCKCHAIN_PRIVATE_KEY, BLOCKCHAIN_RPC_URL, BLOCKCHAIN_SENDER_ADDRESS, DATA_DIR, RIGHTS_LEDGER_ADDRESS
+from urllib.parse import urlparse
+from ..config import APP_ENV, BLOCKCHAIN_CHAIN_ID, BLOCKCHAIN_MODE, BLOCKCHAIN_PRIVATE_KEY, BLOCKCHAIN_RPC_URL, BLOCKCHAIN_SENDER_ADDRESS, DATA_DIR, RIGHTS_LEDGER_ADDRESS
 
 
 def _web3():
     if not BLOCKCHAIN_RPC_URL or not RIGHTS_LEDGER_ADDRESS:
         return None, "BLOCKCHAIN_RPC_URL and RIGHTS_LEDGER_ADDRESS are required"
+    if APP_ENV == "production":
+        host = urlparse(BLOCKCHAIN_RPC_URL).hostname
+        try:
+            loopback = bool(host and ip_address(host).is_loopback)
+        except ValueError:
+            loopback = bool(host and (host == "localhost" or host.endswith(".localhost")))
+        if loopback:
+            return None, "Local RPC endpoints are not allowed in production"
     try:
         from web3 import Web3
     except ImportError:
@@ -21,6 +31,8 @@ def _web3():
     try:
         if not w3.is_connected():
             return None, "Configured RPC endpoint is unavailable"
+        if APP_ENV == "production" and w3.eth.chain_id == 31337:
+            return None, "Hardhat local chain ID 31337 is not allowed in production"
         if not w3.is_address(RIGHTS_LEDGER_ADDRESS):
             return None, "RIGHTS_LEDGER_ADDRESS is invalid"
         if not w3.eth.get_code(Web3.to_checksum_address(RIGHTS_LEDGER_ADDRESS)):
@@ -36,13 +48,91 @@ def _web3():
 
 
 def status():
-    connection, error = _web3()
-    if error:
-        return {"status": "unavailable" if BLOCKCHAIN_RPC_URL else "not_configured", "verified": False, "mode": BLOCKCHAIN_MODE, "error": error}
-    w3, _ = connection
-    return {"status": "connected", "verified": True, "mode": BLOCKCHAIN_MODE, "chain_id": w3.eth.chain_id,
-            "contract_address": RIGHTS_LEDGER_ADDRESS,
-            "transaction_signer": "configured" if BLOCKCHAIN_PRIVATE_KEY or BLOCKCHAIN_SENDER_ADDRESS else "not_configured"}
+    """Return safe, read-only diagnostics; never include URLs, keys, or provider errors."""
+    expected_chain_id = None
+    try:
+        expected_chain_id = int(BLOCKCHAIN_CHAIN_ID) if BLOCKCHAIN_CHAIN_ID else None
+    except (TypeError, ValueError):
+        pass
+    result = {
+        "status": "not_configured" if not BLOCKCHAIN_RPC_URL else "unavailable",
+        "verified": False,
+        "mode": BLOCKCHAIN_MODE,
+        "rpc_connected": False,
+        "expected_chain_id": expected_chain_id,
+        "actual_chain_id": None,
+        "contract_address_configured": bool(RIGHTS_LEDGER_ADDRESS),
+        "contract_code_found": False,
+        "contract_abi_compatible": False,
+        "backend_issuer_authorized": None,
+        "transaction_signer": "configured" if BLOCKCHAIN_PRIVATE_KEY or BLOCKCHAIN_SENDER_ADDRESS else "not_configured",
+    }
+    if not BLOCKCHAIN_RPC_URL:
+        result["error"] = "BLOCKCHAIN_RPC_URL is not configured"
+        return result
+    if not RIGHTS_LEDGER_ADDRESS:
+        result["error"] = "RIGHTS_LEDGER_ADDRESS is not configured"
+        return result
+    try:
+        from web3 import Web3
+        if APP_ENV == "production":
+            host = urlparse(BLOCKCHAIN_RPC_URL).hostname
+            try:
+                loopback = bool(host and ip_address(host).is_loopback)
+            except ValueError:
+                loopback = bool(host and (host == "localhost" or host.endswith(".localhost")))
+            if loopback:
+                result["error"] = "Local RPC endpoints are not allowed in production"
+                return result
+        w3 = Web3(Web3.HTTPProvider(BLOCKCHAIN_RPC_URL, request_kwargs={"timeout": 5}))
+        if not w3.is_connected():
+            result["error"] = "Configured RPC endpoint is unavailable"
+            return result
+        result["rpc_connected"] = True
+        actual_chain_id = w3.eth.chain_id
+        result["actual_chain_id"] = actual_chain_id
+        if BLOCKCHAIN_CHAIN_ID and expected_chain_id is None:
+            result["error"] = "BLOCKCHAIN_CHAIN_ID is invalid"
+            return result
+        if APP_ENV == "production" and actual_chain_id == 31337:
+            result["error"] = "Hardhat local chain ID 31337 is not allowed in production"
+            return result
+        if expected_chain_id is not None and actual_chain_id != expected_chain_id:
+            result["error"] = "Connected chain ID does not match BLOCKCHAIN_CHAIN_ID"
+            return result
+        if not w3.is_address(RIGHTS_LEDGER_ADDRESS):
+            result["error"] = "RIGHTS_LEDGER_ADDRESS is invalid"
+            return result
+        address = Web3.to_checksum_address(RIGHTS_LEDGER_ADDRESS)
+        if not w3.eth.get_code(address):
+            result["error"] = "No contract code found at RIGHTS_LEDGER_ADDRESS"
+            return result
+        result["contract_code_found"] = True
+        abi_path = DATA_DIR / "rights_ledger_abi.json"
+        abi = json.loads(abi_path.read_text(encoding="utf-8"))
+        contract = w3.eth.contract(address=address, abi=abi)
+        # Exercise the actual registry methods so a bytecode-only or wrong
+        # contract cannot be reported as a compatible RightsLedger.
+        contract.functions.owner().call()
+        contract.functions.authorizedProviders("0x0000000000000000000000000000000000000000").call()
+        contract.functions.getLicence(b"\0" * 32).call()
+        result["contract_abi_compatible"] = True
+        signer_address = None
+        if BLOCKCHAIN_PRIVATE_KEY:
+            signer_address = w3.eth.account.from_key(BLOCKCHAIN_PRIVATE_KEY).address
+        elif BLOCKCHAIN_SENDER_ADDRESS and w3.is_address(BLOCKCHAIN_SENDER_ADDRESS):
+            signer_address = Web3.to_checksum_address(BLOCKCHAIN_SENDER_ADDRESS)
+        if signer_address:
+            result["backend_issuer_authorized"] = bool(contract.functions.authorizedProviders(signer_address).call())
+        result["status"] = "connected"
+        result["verified"] = True
+        result["chain_id"] = actual_chain_id  # Backwards-compatible health field.
+        result["contract_address"] = address
+        return result
+    except Exception as exc:
+        # Exception text can include provider details; expose only the type.
+        result["error"] = f"RPC or contract diagnostic failed: {type(exc).__name__}"
+        return result
 
 
 def _sign_and_send(w3, function):

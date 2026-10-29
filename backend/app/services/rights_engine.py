@@ -4,6 +4,7 @@ from .signature_service import verify_dataset_details
 
 REQUIRED = ("dataset_id", "content_hash", "language", "licence_version", "issuer", "purposes", "regions", "derivatives_allowed", "redistribution_allowed", "expires_at", "licensing_cost", "active", "signature")
 V2_REQUIRED = ("record_id", "record_schema_version", "record_version", "issued_at", "updated_at", "issuer_key_id", "signature_algorithm", "revocation_status")
+V3_REQUIRED = ("rights_evidence",)
 POLICY_VERSION = "bhashachain-rights-v2"
 
 
@@ -22,6 +23,8 @@ def evaluate(dataset, request, service_available=True):
     schema = dataset.get("record_schema_version", 1)
     if schema == 2:
         missing.extend(key for key in V2_REQUIRED if key not in dataset or dataset[key] is None)
+    elif schema == 3:
+        missing.extend(key for key in V2_REQUIRED + V3_REQUIRED if key not in dataset or dataset[key] is None)
     if missing:
         return ["MISSING_LICENCE_FIELDS"], evidence
     evidence["rights_record_version"] = dataset.get("record_version", 1)
@@ -31,7 +34,7 @@ def evaluate(dataset, request, service_available=True):
         return ["UNAUTHORIZED_ISSUER"], evidence
     if not signature.get("valid"):
         return ["INVALID_SIGNATURE"], evidence
-    if schema not in (1, 2):
+    if schema not in (1, 2, 3):
         return ["UNSUPPORTED_RIGHTS_RECORD_VERSION"], evidence
     if request.get("rights_record_version") is not None and request["rights_record_version"] != dataset.get("record_version", 1):
         return ["STALE_RIGHTS_RECORD"], evidence

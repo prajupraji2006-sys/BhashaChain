@@ -3,20 +3,22 @@ from dotenv import load_dotenv
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(PROJECT_ROOT / ".env")
-import hmac, json, os, uuid
+import csv, hashlib, hmac, io, json, logging, os, re, uuid
 import sqlite3
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 from .config import API_ACCESS_TOKEN, APP_ENV, BLOCKCHAIN_MODE, CORS_ORIGINS, DATA_DIR
-from .db import init_db, list_datasets, get_dataset, save_dataset, update_dataset, save_decision, update_decision, list_decisions, get_decision, save_audit_event, list_audit_events, verify_audit_chain
+from .db import init_db, list_datasets, get_dataset, save_dataset, update_dataset, save_decision, update_decision, list_decisions, get_decision, save_audit_event, list_audit_events, verify_audit_chain, save_rights_lab_dataset, update_rights_lab_dataset, get_rights_lab_dataset, list_rights_lab_datasets, save_rights_lab_decision, list_rights_lab_decisions
 from .services.signature_service import sign_dataset
 from .services.rights_engine import evaluate, POLICY_VERSION
-from .services.manifest_service import manifests, manifest_details
+from .services.manifest_service import manifests, manifest_details, verified_lab_decisions
+from .services.rights_lab import evaluate_evidence, benchmark_cases, validate_csv_import
 from .services.cost_service import allocate_cost
 from .services import blockchain_service
+from optimizer.facility_dispatch import log_dispatch, solve_dispatch
 from optimizer.classical_baseline import select as classical_select
 from optimizer.opt_selector import select_with_qpiai
 from optimizer.quantum_experiment import run_experiment
@@ -35,6 +37,7 @@ class DatasetIn(BaseModel):
     issuer:str=Field(min_length=1,max_length=256); purposes:list[str]=Field(min_length=1); regions:list[str]=Field(min_length=1)
     derivatives_allowed:bool=False; redistribution_allowed:bool=False
     expires_at:str; licensing_cost:float=Field(ge=0,allow_inf_nan=False); active:bool=True
+    rights_evidence:dict|None=None
     @field_validator("expires_at")
     @classmethod
     def valid_future_expiry(cls,value):
@@ -50,6 +53,10 @@ class DatasetIn(BaseModel):
         if any(not value for value in cleaned) or len(cleaned)!=len(set(cleaned)):
             raise ValueError("purpose and region lists must contain unique, nonempty values")
         return cleaned
+    @field_validator("rights_evidence")
+    @classmethod
+    def validate_attached_rights_evidence(cls,value):
+        return RightsEvidenceIn.model_validate(value).model_dump() if value is not None else None
 class CheckIn(BaseModel):
     dataset_id:str; purpose:str; geography:str; content_hash:str|None=None; licence_version:str|None=None; rights_record_version:int|None=None
     derivatives:bool=False; redistribution:bool=False
@@ -81,6 +88,81 @@ class OptimizeIn(BaseModel):
         if any(not value for value in cleaned) or len(cleaned)!=len(set(cleaned)):
             raise ValueError("values must be unique and nonempty")
         return cleaned
+class DispatchJobIn(BaseModel):
+    job_id:str=Field(min_length=1,max_length=64,pattern=r"^[A-Za-z0-9._-]+$")
+    chemistry:str=Field(min_length=1,max_length=32,pattern=r"^[A-Za-z0-9._-]+$")
+    units:int=Field(gt=0,le=1000)
+class DispatchFacilityIn(BaseModel):
+    facility_id:str=Field(min_length=1,max_length=64,pattern=r"^[A-Za-z0-9._-]+$")
+    name:str=Field(min_length=1,max_length=64)
+    capacity:int=Field(gt=0,le=1000)
+    chemistries:list[str]=Field(min_length=1,max_length=16)
+    cost_per_unit:float=Field(ge=0,allow_inf_nan=False)
+    @field_validator("chemistries")
+    @classmethod
+    def valid_chemistries(cls,values):
+        cleaned=[value.strip() for value in values]
+        if any(not value or len(value)>32 for value in cleaned) or len(cleaned)!=len(set(x.casefold() for x in cleaned)):
+            raise ValueError("chemistries must be unique, nonempty values of at most 32 characters")
+        return cleaned
+class FacilityDispatchIn(BaseModel):
+    jobs:list[DispatchJobIn]=Field(min_length=1,max_length=6)
+    facilities:list[DispatchFacilityIn]=Field(min_length=1,max_length=6)
+    @field_validator("jobs")
+    @classmethod
+    def unique_job_ids(cls,values):
+        if len({x.job_id for x in values})!=len(values): raise ValueError("job_id values must be unique")
+        return values
+    @field_validator("facilities")
+    @classmethod
+    def unique_facility_ids(cls,values):
+        if len({x.facility_id for x in values})!=len(values): raise ValueError("facility_id values must be unique")
+        return values
+
+class RightsEvidenceIn(BaseModel):
+    dataset_name:str=Field(min_length=1,max_length=256); language:str=Field(min_length=2,max_length=16)
+    modality:str=Field(min_length=1,max_length=64); source_url:str=Field(min_length=8,max_length=2048)
+    file_sha256:str|None=Field(default=None,pattern=r"^[a-fA-F0-9]{64}$")
+    source_publisher:str=Field(min_length=1,max_length=256); licence_name:str=Field(min_length=1,max_length=256)
+    licence_url:str=Field(min_length=8,max_length=2048)
+    licence_evidence_status:str; provenance_status:str; intended_purpose:str=Field(min_length=1,max_length=128)
+    commercial_training:bool|None=None; attribution_required:bool|None=None
+    redistribution_conditions:str=""; share_alike_conditions:str=""
+    expiry_date:str|None=None; expiry_evidence_status:str="UNKNOWN"; revocation_status:str="UNKNOWN"
+    evidence_notes:str=Field(min_length=1,max_length=4000)
+    evidence_timestamp:str=Field(min_length=10,max_length=64)
+    @field_validator("source_url","licence_url")
+    @classmethod
+    def require_https_evidence_links(cls,value):
+        if not value.startswith("https://"):
+            raise ValueError("evidence links must use HTTPS")
+        return value
+    @field_validator("licence_evidence_status","provenance_status","expiry_evidence_status")
+    @classmethod
+    def valid_evidence_status(cls,value):
+        normalized=value.upper()
+        if normalized not in {"VERIFIED","UNVERIFIED","UNKNOWN","NEEDS_REVIEW"}:
+            raise ValueError("evidence status must be VERIFIED, UNVERIFIED, UNKNOWN, or NEEDS_REVIEW")
+        return normalized
+    @field_validator("revocation_status")
+    @classmethod
+    def valid_revocation_status(cls,value):
+        normalized=value.upper()
+        if normalized not in {"ACTIVE","REVOKED","UNKNOWN"}:
+            raise ValueError("revocation status must be ACTIVE, REVOKED, or UNKNOWN")
+        return normalized
+
+class RightsLabImportIn(BaseModel):
+    dataset_id:str=Field(min_length=1,max_length=128,pattern=r"^[A-Za-z0-9._-]+$")
+    filename:str=Field(min_length=5,max_length=255); row_count:int=Field(ge=20)
+    columns:list[str]=Field(min_length=2,max_length=128); source_url:str=Field(min_length=8,max_length=2048)
+    file_sha256:str=Field(pattern=r"^[a-fA-F0-9]{64}$")
+    sample_rows:list[dict[str,str]]=Field(min_length=20,max_length=50)
+    rights_evidence:RightsEvidenceIn
+
+class RightsLabCheckIn(BaseModel):
+    dataset_id:str; purpose:str=Field(min_length=1,max_length=128); geography:str=Field(min_length=1,max_length=16)
+    attribution_provided:bool|None=None; will_share_adapted_work:bool|None=None; share_alike_acknowledged:bool|None=None
 
 def startup():
     init_db()
@@ -137,7 +219,14 @@ def datasets(): return list_datasets()
 @app.post("/api/datasets")
 def register_dataset(payload:DatasetIn,_authorized=Depends(require_api_access)):
     if get_dataset(payload.dataset_id): raise HTTPException(409,"DATASET_ALREADY_REGISTERED")
-    d=payload.model_dump(); d["active"]=True; d["created_at"]=datetime.now(timezone.utc).isoformat(); d["signature"]=sign_dataset(d)
+    if payload.rights_evidence is not None:
+        evidence_hash=payload.rights_evidence.get("file_sha256")
+        if not isinstance(evidence_hash,str) or evidence_hash.lower()!=payload.content_hash.lower():
+            raise HTTPException(422,"SIGNED_RIGHTS_EVIDENCE_FILE_HASH_MISMATCH")
+        evidence_check=evaluate_evidence(payload.rights_evidence,{"purpose":payload.rights_evidence["intended_purpose"],"attribution_provided":True,"will_share_adapted_work":False})
+        if evidence_check["decision"]!="ALLOWED":
+            raise HTTPException(422,{"code":"RIGHTS_EVIDENCE_NOT_READY_FOR_REGISTRATION","decision":evidence_check["decision"],"reason_codes":evidence_check["reason_codes"]})
+    d=payload.model_dump(exclude_none=True); d["active"]=True; d["created_at"]=datetime.now(timezone.utc).isoformat(); d["signature"]=sign_dataset(d)
     if BLOCKCHAIN_MODE=="disabled":
         d["blockchain"]={"status":"disabled","verified":False}
     elif BLOCKCHAIN_MODE in ("optional","required"):
@@ -193,6 +282,32 @@ def optimize(payload:OptimizeIn,_authorized=Depends(require_api_access)):
     save_audit_event("OPTIMIZATION_RUN",response,datetime.now(timezone.utc).isoformat(),trace_id=run_id)
     return response
 
+@app.post("/api/qubo/dispatch")
+async def qubo_dispatch(request:Request,_authorized=Depends(require_api_access)):
+    supplied=request.headers.get("X-Request-ID","")
+    trace_id=supplied if re.fullmatch(r"[A-Za-z0-9._-]{1,64}",supplied) else uuid.uuid4().hex
+    log_dispatch(logging.INFO,"Dispatch request received",trace_id)
+    try:
+        raw=await request.json()
+    except Exception as exc:
+        log_dispatch(logging.WARNING,"Dispatch input validation failed",trace_id,error_type=type(exc).__name__)
+        raise HTTPException(422,{"code":"DISPATCH_INVALID_JSON","trace_id":trace_id})
+    try:
+        payload=FacilityDispatchIn.model_validate(raw)
+    except ValidationError as exc:
+        fields=[".".join(str(part) for part in item.get("loc",())) for item in exc.errors()]
+        log_dispatch(logging.WARNING,"Dispatch input validation failed",trace_id,error_count=len(fields),fields=fields)
+        raise HTTPException(422,{"code":"DISPATCH_INVALID_INPUT","trace_id":trace_id,"invalid_fields":fields})
+    log_dispatch(logging.INFO,"Dispatch input validation completed",trace_id,
+                 job_count=len(payload.jobs),facility_count=len(payload.facilities))
+    started=__import__("time").perf_counter()
+    try:
+        return solve_dispatch(payload.model_dump(),trace_id)
+    except Exception as exc:
+        log_dispatch(logging.ERROR,"Dispatch execution failed",trace_id,error_type=type(exc).__name__,
+                     duration_ms=round((__import__("time").perf_counter()-started)*1000,3))
+        raise HTTPException(500,{"code":"DISPATCH_SOLVER_ERROR","trace_id":trace_id})
+
 @app.post("/api/datasets/{dataset_id}/revoke")
 def revoke_dataset(dataset_id:str,_authorized=Depends(require_api_access)):
     d=get_dataset(dataset_id)
@@ -246,6 +361,155 @@ def accepted_manifest(): return manifest_details("accepted")
 
 @app.get("/api/manifests/rejected")
 def rejected_manifest(): return manifest_details("rejected")
+
+@app.get("/api/manifests/needs-review")
+def needs_review_manifest(): return manifest_details("needs_review")
+
+@app.post("/api/rights-lab/import")
+def rights_lab_import(payload:RightsLabImportIn,_authorized=Depends(require_api_access)):
+    filename=Path(payload.filename).name
+    if filename!=payload.filename:
+        raise HTTPException(422,"CSV_FILENAME_INVALID")
+    try:
+        validate_csv_import(filename,payload.columns,payload.row_count,payload.file_sha256,payload.sample_rows)
+    except ValueError as exc:
+        raise HTTPException(422,str(exc))
+    if payload.source_url!=payload.rights_evidence.source_url:
+        raise HTTPException(422,"SOURCE_URL_EVIDENCE_MISMATCH")
+    if get_rights_lab_dataset(payload.dataset_id):
+        raise HTTPException(409,"RIGHTS_LAB_DATASET_ALREADY_IMPORTED")
+    created=datetime.now(timezone.utc).isoformat()
+    evidence=payload.rights_evidence.model_dump()
+    evidence["file_sha256"]=payload.file_sha256.lower()
+    evidence["evidence_timestamp"]=created
+    item={"dataset_id":payload.dataset_id,"filename":filename,"row_count":payload.row_count,
+          "columns":payload.columns,"source_url":payload.source_url,"file_sha256":payload.file_sha256.lower(),
+          "hash_status":"browser_computed_unverified","sample_rows":payload.sample_rows,
+          "rights_evidence":evidence,"created_at":created,"original_file_stored":False}
+    try:
+        save_rights_lab_dataset(item)
+    except sqlite3.IntegrityError:
+        raise HTTPException(409,"RIGHTS_LAB_DATASET_ALREADY_IMPORTED")
+    save_audit_event("RIGHTS_LAB_DATASET_IMPORTED",{"dataset_id":item["dataset_id"],"file_sha256":item["file_sha256"],"sample_row_count":len(item["sample_rows"]),"original_file_stored":False},created)
+    return {key:value for key,value in item.items() if key!="sample_rows"}
+
+@app.get("/api/rights-lab/datasets")
+def rights_lab_datasets():
+    return [{key:value for key,value in item.items() if key!="sample_rows"} for item in list_rights_lab_datasets()]
+
+@app.post("/api/rights-lab/datasets/{dataset_id}/evidence")
+def rights_lab_update_evidence(dataset_id:str,payload:RightsEvidenceIn,_authorized=Depends(require_api_access)):
+    item=get_rights_lab_dataset(dataset_id)
+    if not item: raise HTTPException(404,"RIGHTS_LAB_DATASET_NOT_FOUND")
+    evidence=payload.model_dump()
+    if evidence.get("file_sha256") and evidence["file_sha256"].lower()!=item["file_sha256"].lower():
+        raise HTTPException(422,"SIGNED_RIGHTS_EVIDENCE_FILE_HASH_MISMATCH")
+    evidence["file_sha256"]=item["file_sha256"]
+    evidence["evidence_timestamp"]=datetime.now(timezone.utc).isoformat()
+    item["rights_evidence"]=evidence
+    item["source_url"]=evidence["source_url"]
+    update_rights_lab_dataset(item)
+    save_audit_event("RIGHTS_LAB_EVIDENCE_UPDATED",{"dataset_id":dataset_id,"file_sha256":item["file_sha256"],"licence_evidence_status":evidence["licence_evidence_status"],"provenance_status":evidence["provenance_status"]},evidence["evidence_timestamp"])
+    return {key:value for key,value in item.items() if key!="sample_rows"}
+
+@app.post("/api/rights-lab/datasets/{dataset_id}/store-original")
+async def rights_lab_store_original(dataset_id:str,request:Request,_authorized=Depends(require_api_access)):
+    item=get_rights_lab_dataset(dataset_id)
+    if not item: raise HTTPException(404,"RIGHTS_LAB_DATASET_NOT_FOUND")
+    size=0; parts=[]
+    async for chunk in request.stream():
+        size+=len(chunk)
+        if size>25*1024*1024: raise HTTPException(413,"ORIGINAL_CSV_EXCEEDS_25_MB_LIMIT")
+        parts.append(chunk)
+    content=b"".join(parts)
+    actual_hash=hashlib.sha256(content).hexdigest()
+    if actual_hash!=item["file_sha256"]:
+        raise HTTPException(422,"ORIGINAL_CSV_SHA256_MISMATCH")
+    try:
+        decoded=content.decode("utf-8-sig")
+        reader=csv.DictReader(io.StringIO(decoded,newline=""))
+        headers=list(reader.fieldnames or [])
+        if headers and headers[0].startswith("\ufeff"): headers[0]=headers[0].lstrip("\ufeff")
+        reader.fieldnames=headers
+        rows=list(reader)
+    except (UnicodeDecodeError,csv.Error):
+        raise HTTPException(422,"ORIGINAL_CSV_INVALID_UTF8_OR_FORMAT")
+    if headers!=item["columns"] or len(rows)!=item["row_count"] or rows[:len(item["sample_rows"])]!=item["sample_rows"]:
+        raise HTTPException(422,"ORIGINAL_CSV_CONTENT_DOES_NOT_MATCH_IMPORTED_SAMPLE")
+    private_dir=DATA_DIR.parent/"private_data"
+    private_dir.mkdir(parents=True,exist_ok=True)
+    target=private_dir/f"{dataset_id}-{actual_hash}.csv"
+    temporary=target.with_suffix(".csv.tmp")
+    temporary.write_bytes(content)
+    os.replace(temporary,target)
+    item["hash_status"]="server_verified"
+    item["original_file_stored"]=True
+    item["original_file_size_bytes"]=size
+    update_rights_lab_dataset(item)
+    now=datetime.now(timezone.utc).isoformat()
+    save_audit_event("RIGHTS_LAB_ORIGINAL_STORED",{"dataset_id":dataset_id,"file_sha256":actual_hash,"size_bytes":size,"storage":"backend/private_data (gitignored)"},now)
+    return {"stored":True,"file_sha256":actual_hash,"size_bytes":size,"storage":"backend/private_data (gitignored)"}
+
+@app.get("/api/rights-lab/benchmarks")
+def rights_lab_benchmarks():
+    return {"synthetic":True,"scope":"evidence-policy layer only; does not authorize registry or training-corpus access","policy_version":"bhashachain-ingestion-evidence-v1","cases":benchmark_cases()}
+
+@app.post("/api/rights-lab/check")
+def rights_lab_check(payload:RightsLabCheckIn,_authorized=Depends(require_api_access)):
+    item=get_rights_lab_dataset(payload.dataset_id)
+    if not item: raise HTTPException(404,"RIGHTS_LAB_DATASET_NOT_FOUND")
+    request_data=payload.model_dump(exclude={"dataset_id"})
+    evidence_result=evaluate_evidence(item["rights_evidence"],request_data)
+    decision=evidence_result["decision"]
+    reasons=list(evidence_result["reason_codes"])
+    signature={"status":"not_checked","verified":False}
+    chain={"status":"not_checked","verified":False,"mode":BLOCKCHAIN_MODE}
+    registered=get_dataset(payload.dataset_id)
+    if decision=="ALLOWED":
+        if not registered:
+            decision="NEEDS_REVIEW"; reasons.append("SIGNED_REGISTRY_RECORD_REQUIRED")
+        elif registered.get("content_hash","").lower()!=item["file_sha256"].lower():
+            decision="NEEDS_REVIEW"; reasons.append("REGISTERED_CONTENT_HASH_MISMATCH")
+        elif registered.get("record_schema_version")!=3 or registered.get("rights_evidence")!=item["rights_evidence"]:
+            decision="NEEDS_REVIEW"; reasons.append("SIGNED_RIGHTS_EVIDENCE_MISMATCH")
+        else:
+            policy_reasons,policy_evidence,chain=evaluate_request(registered,{"purpose":payload.purpose,"geography":payload.geography,"content_hash":item["file_sha256"]})
+            signature=policy_evidence.get("signature_verification",signature)
+            if signature.get("verified") is not True:
+                decision="REJECTED"; reasons.extend(policy_reasons or ["INVALID_SIGNED_RIGHTS_RECORD"])
+            else:
+                explicit_blocks={"LICENCE_EXPIRED","LICENCE_REVOKED","LICENCE_REVOKED_ON_CHAIN","COMMERCIAL_TRAINING_NOT_PERMITTED","PURPOSE_NOT_PERMITTED","GEOGRAPHY_NOT_PERMITTED","HASH_MISMATCH","INVALID_LICENCE_VERSION","DERIVATIVES_NOT_PERMITTED","REDISTRIBUTION_NOT_PERMITTED","ONCHAIN_POLICY_MISMATCH"}
+                applicable=[reason for reason in policy_reasons if reason in explicit_blocks]
+                if applicable:
+                    decision="REJECTED"; reasons.extend(applicable)
+                elif policy_reasons or chain.get("verified") is not True:
+                    decision="NEEDS_REVIEW"; reasons.extend(policy_reasons or ["ONCHAIN_REGISTRY_VERIFICATION_REQUIRED"])
+    trace_id=str(uuid.uuid4()); decision_id=str(uuid.uuid4()); now=datetime.now(timezone.utc).isoformat()
+    result={"decision_id":decision_id,"trace_id":trace_id,"dataset_id":payload.dataset_id,
+            "file_sha256":item["file_sha256"],"intended_use":payload.purpose,"geography":payload.geography,
+            "attribution_provided":payload.attribution_provided,"will_share_adapted_work":payload.will_share_adapted_work,
+            "share_alike_acknowledged":payload.share_alike_acknowledged,
+            "decision":decision,"reason_codes":sorted(set(reasons)),"policy_version":"bhashachain-ingestion-evidence-v1",
+            "evaluated_at":now,"licence_evidence_status":item["rights_evidence"]["licence_evidence_status"],
+            "provenance_status":item["rights_evidence"]["provenance_status"],"signature_verification":signature,
+            "blockchain_verification":chain,"training_eligible":decision=="ALLOWED" and signature.get("verified") is True and chain.get("verified") is True,
+            "evidence_layer_result":evidence_result["decision"]}
+    save_rights_lab_decision(result)
+    save_audit_event("RIGHTS_LAB_INGESTION_DECISION",result,now,decision_id,trace_id=trace_id)
+    return result
+
+@app.get("/api/rights-lab/history")
+def rights_lab_history(): return list_rights_lab_decisions()
+
+@app.get("/api/rights-lab/accepted-corpus")
+def rights_lab_accepted_corpus(_authorized=Depends(require_api_access)):
+    rows=[]
+    for decision in verified_lab_decisions():
+        item=get_rights_lab_dataset(decision["dataset_id"])
+        if item:
+            rows.append({"dataset_id":decision["dataset_id"],"file_sha256":decision["file_sha256"],
+                         "decision_id":decision["decision_id"],"sample_rows":item["sample_rows"]})
+    return {"count":len(rows),"entries":rows,"requires_verified_signature_and_chain":True}
 
 @app.get("/api/audit")
 def audit(): return list_decisions()

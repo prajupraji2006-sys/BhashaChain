@@ -141,8 +141,37 @@ def test_chain_unconfigured_never_claims_verification(monkeypatch):
     monkeypatch.setattr(blockchain_service,"RIGHTS_LEDGER_ADDRESS","")
     status=blockchain_service.status()
     assert status["status"]=="not_configured" and status["verified"] is False
+    assert status["rpc_connected"] is False
+    assert status["contract_abi_compatible"] is False
+    assert status["backend_issuer_authorized"] is None
     result=blockchain_service.register(sample())
     assert result["status"]=="not_submitted" and result["verified"] is False
+
+def test_production_chain_rejects_local_hardhat_rpc(monkeypatch):
+    from backend.app.services import blockchain_service
+    monkeypatch.setattr(blockchain_service,"APP_ENV","production")
+    monkeypatch.setattr(blockchain_service,"BLOCKCHAIN_RPC_URL","http://127.0.0.1:8545")
+    monkeypatch.setattr(blockchain_service,"RIGHTS_LEDGER_ADDRESS","0x"+"1"*40)
+    connection,error=blockchain_service._web3()
+    assert connection is None and error=="Local RPC endpoints are not allowed in production"
+
+def test_production_chain_rejects_hardhat_chain_id(monkeypatch):
+    import web3
+    from backend.app.services import blockchain_service
+    class FakeEth:
+        chain_id=31337
+    class FakeWeb3:
+        eth=FakeEth()
+        def __init__(self,_provider): pass
+        @staticmethod
+        def HTTPProvider(*_args,**_kwargs): return object()
+        def is_connected(self): return True
+    monkeypatch.setattr(web3,"Web3",FakeWeb3)
+    monkeypatch.setattr(blockchain_service,"APP_ENV","production")
+    monkeypatch.setattr(blockchain_service,"BLOCKCHAIN_RPC_URL","https://rpc.example")
+    monkeypatch.setattr(blockchain_service,"RIGHTS_LEDGER_ADDRESS","0x"+"1"*40)
+    connection,error=blockchain_service._web3()
+    assert connection is None and error=="Hardhat local chain ID 31337 is not allowed in production"
 
 def test_api_only_persists_confirmed_chain_mutations(tmp_path,monkeypatch):
     from backend.app import db, config

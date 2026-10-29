@@ -1,0 +1,15 @@
+{
+  "evidence_type": "synthetic_test_fixture",
+  "synthetic": true,
+  "note": "Deterministic smoke-test inputs only; this fixture is not a real QpiAI execution or facility recommendation.",
+  "request": {
+    "jobs": [
+      {"job_id": "batch-001", "chemistry": "alkaline", "units": 2}
+    ],
+    "facilities": [
+      {"facility_id": "facility-alpha", "name": "Facility Alpha", "capacity": 2, "chemistries": ["alkaline"], "cost_per_unit": 5},
+      {"facility_id": "facility-beta", "name": "Facility Beta", "capacity": 2, "chemistries": ["alkaline"], "cost_per_unit": 3}
+    ]
+  },
+  "expected": {"status": "OPTIMAL", "facility_id": "facility-beta", "objective_value": 6}
+}

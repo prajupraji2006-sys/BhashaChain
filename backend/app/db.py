@@ -51,6 +51,8 @@ def init_db():
         db.executescript("""
         CREATE TABLE IF NOT EXISTS datasets(dataset_id TEXT PRIMARY KEY, data TEXT NOT NULL, created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS decisions(decision_id TEXT PRIMARY KEY, dataset_id TEXT NOT NULL, decision TEXT NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS rights_lab_datasets(dataset_id TEXT PRIMARY KEY, data TEXT NOT NULL, created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS rights_lab_decisions(decision_id TEXT PRIMARY KEY, dataset_id TEXT NOT NULL, decision TEXT NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS audit_events(id INTEGER PRIMARY KEY AUTOINCREMENT, decision_id TEXT, event_type TEXT NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL);
         """)
         columns = {row[1] for row in db.execute("PRAGMA table_info(audit_events)")}
@@ -128,3 +130,40 @@ def get_decision(decision_id):
     with connect() as db:
         row = db.execute("SELECT data FROM decisions WHERE decision_id=?", (decision_id,)).fetchone()
     return json.loads(row[0]) if row else None
+
+
+def save_rights_lab_dataset(dataset):
+    with connect() as db:
+        db.execute("INSERT INTO rights_lab_datasets VALUES(?,?,?)",
+                   (dataset["dataset_id"], _canonical(dataset), dataset["created_at"]))
+
+
+def update_rights_lab_dataset(dataset):
+    with connect() as db:
+        db.execute("UPDATE rights_lab_datasets SET data=? WHERE dataset_id=?",
+                   (_canonical(dataset), dataset["dataset_id"]))
+
+
+def get_rights_lab_dataset(dataset_id):
+    with connect() as db:
+        row = db.execute("SELECT data FROM rights_lab_datasets WHERE dataset_id=?", (dataset_id,)).fetchone()
+    return json.loads(row[0]) if row else None
+
+
+def list_rights_lab_datasets():
+    with connect() as db:
+        return [json.loads(row[0]) for row in db.execute(
+            "SELECT data FROM rights_lab_datasets ORDER BY created_at DESC")]
+
+
+def save_rights_lab_decision(decision):
+    with connect() as db:
+        db.execute("INSERT INTO rights_lab_decisions VALUES(?,?,?,?,?)", (
+            decision["decision_id"], decision["dataset_id"], decision["decision"],
+            _canonical(decision), decision["evaluated_at"]))
+
+
+def list_rights_lab_decisions():
+    with connect() as db:
+        return [json.loads(row[0]) for row in db.execute(
+            "SELECT data FROM rights_lab_decisions ORDER BY created_at DESC")]
