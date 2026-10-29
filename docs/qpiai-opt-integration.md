@@ -1,0 +1,9 @@
+# QpiAI Opt
+
+The adapter uses the SDK's documented `Binary`, `Model`, `Client`, and `solve` interfaces. It minimizes licence cost with explicit budget, required-language, and mandatory-dataset constraints. Rights-ineligible datasets are removed before model construction. The classical branch-and-bound result is computed independently and always returned in its own `classical_baseline` field.
+
+The supported local integration is pinned in `backend/requirements-qpiai-opt.txt` (`qpiai-opt==0.0.9`). This SDK version documents authenticated local MILP solving: the API key is verified online before compute, while the model is solved with the local native runtime. The credential verification endpoint does not receive the optimization model and the SDK documentation marks local solve as non-billable. The adapter explicitly uses `mode="local"` and `allow_platform=False`; it never enables paid platform execution or platform fallback. Only a result carrying the SDK's actual `execution_mode="local"` is reported as a completed QpiAI result.
+
+Set `QPIAI_OPT_API_KEY` in the server environment or secret manager (for local development, `.env`). The key is not included in logs or API result messages. Failure logs contain only stage, safe error code, and exception class; exception text and request headers are intentionally omitted. Possible categories distinguish credential/service verification, network verification, missing local runtime, model/result validation, and other local solver errors.
+
+The API returns QpiAI Opt and the classical baseline separately. If QpiAI is unconfigured or fails, no classical result is copied into the QpiAI fields. Run the regression without a hosted solve using the regular backend suite; an explicit SDK local solve performs online key verification but does not submit paid platform work.

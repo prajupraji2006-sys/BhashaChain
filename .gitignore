@@ -1,0 +1,46 @@
+# Environment files and local credentials
+.env
+.env.*
+!.env.example
+!**/.env.example
+!frontend/.env.production.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.keystore
+*.mnemonic
+*.seed
+**/secrets/
+credentials.json
+
+# Archives, Python environments, caches, logs, and local databases
+*.zip
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.log
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+
+# Generated manifests and frontend dependencies/builds
+backend/manifests/*.json
+backend/manifests/*.tmp
+node_modules/
+**/node_modules/
+dist/
+artifacts/
+cache/
+coverage/
+contracts/typechain-types/
+contracts/cache/
+contracts/artifacts/
+contracts/ignition/deployments/
+contracts/.hardhat-appdata/

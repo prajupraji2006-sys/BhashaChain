@@ -1,0 +1,5 @@
+# QpiAI Quantum / QCloud
+
+The [official standalone SDK guide](https://docs.qcloud.qpiai.tech/) documents `Circuit`, `QpiAIQuantumAuth.login`, `verify_api_key`, `Circuit.run`, and `get_counts`; the [public SDK repository](https://github.com/qpiai/quantum-sdk) gives a Bell circuit example and the `QpiAI-QSV-Local` device name. The experiment creates and measures a Bell state with two classical bits, then returns actual SDK counts. This is an educational correlated-outcome experiment related to two equivalent dataset options, not a selector and not evidence of quantum advantage.
+
+Configure `QCLOUD_API_KEY` and install `qpiai-quantum` to enable it. The code requests the named local simulator, not a QPU or paid cloud job. `not_configured`, `failed`, and `executed` remain distinct statuses. The SDK authentication endpoint was unreachable in this sandbox, so no live Quantum execution was verified. Authentication, estimator, and job tests are opt-in with `RUN_QPIAI_QUANTUM_INTEGRATION=1`; ordinary test runs do not contact QpiAI. This prototype does not invoke a paid cloud optimization workflow.

@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: bhashachain-api
+    runtime: python
+    plan: free
+    buildCommand: pip install -r backend/requirements.txt -r backend/requirements-qpiai-opt.txt
+    startCommand: uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: APP_ENV
+        value: production
+      - key: API_ACCESS_TOKEN
+        generateValue: true
+      - key: ISSUER_SIGNING_SECRET
+        generateValue: true
+      - key: BLOCKCHAIN_MODE
+        value: disabled
+      - key: CORS_ORIGINS
+        sync: false
+      - key: QPIAI_OPT_API_KEY
+        sync: false
