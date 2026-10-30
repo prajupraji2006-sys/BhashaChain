@@ -1,10 +1,15 @@
-const BASE=import.meta.env.VITE_API_BASE_URL||(import.meta.env.DEV?'http://localhost:8000':'');
+export function getApiBaseUrl(){
+ const configured=import.meta.env.VITE_API_BASE_URL?.trim();
+ if(configured)return configured.replace(/\/+$/,'');
+ if(import.meta.env.DEV)return 'http://localhost:8000';
+ throw new Error('VITE_API_BASE_URL is not configured. Set it to the deployed FastAPI URL and rebuild the frontend.');
+}
 let accessToken='';
 export function setAccessToken(value){accessToken=value||''}
 async function request(path,options={}){
  const headers={'Content-Type':'application/json',...options.headers};
  if(accessToken)headers.Authorization=`Bearer ${accessToken}`;
- const response=await fetch(`${BASE}${path}`,{...options,headers});
+ const response=await fetch(`${getApiBaseUrl()}${path}`,{...options,headers});
  if(!response.ok){const raw=await response.text();try{const parsed=JSON.parse(raw);throw new Error(typeof parsed.detail==='string'?parsed.detail:JSON.stringify(parsed.detail||parsed))}catch(error){if(error instanceof SyntaxError)throw new Error(raw||`HTTP ${response.status}`);throw error}}
  return response.json();
 }

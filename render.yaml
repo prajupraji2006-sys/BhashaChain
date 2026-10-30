@@ -15,21 +15,13 @@ services:
         generateValue: true
       - key: ISSUER_SIGNING_SECRET
         generateValue: true
-      # Production must not treat local SQLite-only demo records as trusted.
-      # Registry operations require a reachable configured ledger.
+      # This deployment is explicitly off-chain until a testnet ledger is approved
+      # and configured. The health endpoint and UI report the disabled chain state.
       - key: BLOCKCHAIN_MODE
-        value: required
-      - key: BLOCKCHAIN_RPC_URL
-        sync: false
-      - key: BLOCKCHAIN_CHAIN_ID
-        sync: false
-      - key: RIGHTS_LEDGER_ADDRESS
-        sync: false
-      - key: BLOCKCHAIN_SENDER_ADDRESS
-        sync: false
-      - key: BLOCKCHAIN_PRIVATE_KEY
-        sync: false
+        value: disabled
       - key: CORS_ORIGINS
         sync: false
+      # Optional: without a key, optimization uses the separately labeled
+      # classical fallback. Never enable hosted platform solving here.
       - key: QPIAI_OPT_API_KEY
         sync: false

@@ -63,9 +63,17 @@ def test_dispatch_qpiai_sdk_local_interface_and_response_are_truthful(monkeypatc
 
     monkeypatch.setenv("QPIAI_OPT_API_KEY", "synthetic-unit-test-key")
     call = {}
-    info = SimpleNamespace(has_usable_solution=True, solution_feasible=True, termination="OPTIMAL", method="synthetic-test")
-    result = SimpleNamespace(execution_mode="local", solution={"x_0_0": 0, "x_0_1": 1}, objective=6.0,
-                             compute_time_s=0.001, info=lambda: info)
+    variable_assignment = {
+        "s_0_0": 0, "s_0_1": 1, "s_1_0": 0, "s_1_1": 0,
+        "x_0_0": 0, "x_0_1": 1,
+    }
+    info = SimpleNamespace(has_usable_solution=True, solution_feasible=True, termination="optimal",
+                           method="exhaustive-enumeration")
+    result = SimpleNamespace(
+        execution_mode="local", solution=[0, 1, 0, 1, 0, 0],
+        variable_assignment=variable_assignment, objective=6.0, compute_time_s=0.001,
+        info=lambda: info,
+    )
 
     def fake_solve(model, **kwargs):
         call.update(kwargs)
@@ -78,6 +86,14 @@ def test_dispatch_qpiai_sdk_local_interface_and_response_are_truthful(monkeypatc
     body = response.json()
     assert body["solver"] == "qpiai_opt" and body["execution_mode"] == "local"
     assert body["status"] == "OPTIMAL" and body["assigned_facility"]["facility_id"] == "facility-beta"
+    assert body["assignments"] == [{
+        "job_id": "batch-001",
+        "facility_id": "facility-beta",
+        "facility_name": "Facility Beta",
+    }]
+    assert body["objective_value"] == 6.0
+    assert body["qpiai_opt"]["bits"] == variable_assignment
+    assert body["qpiai_opt"]["termination"] == "optimal"
     assert call["mode"] == "local" and call["allow_platform"] is False
 
 
@@ -85,12 +101,19 @@ def test_dispatch_qpiai_error_uses_clearly_labelled_fallback(monkeypatch):
     import qpiai_opt.opt_solvers as opt_solvers
 
     monkeypatch.setenv("QPIAI_OPT_API_KEY", "synthetic-unit-test-key")
-    monkeypatch.setattr(opt_solvers, "solve", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("secret text must not be logged")))
+    monkeypatch.setattr(
+        opt_solvers, "solve",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            opt_solvers.AuthenticationError("secret text must not be logged", status_code=401, code="INVALID_API_KEY")
+        ),
+    )
     with TestClient(app) as client:
         response = client.post("/api/qubo/dispatch", json=_fixture()["request"])
     body = response.json()
     assert response.status_code == 200
     assert body["qpiai_opt"]["status"] == "failed"
+    assert body["qpiai_opt"]["upstream_http_status"] == 401
+    assert body["qpiai_opt"]["upstream_error_code"] == "INVALID_API_KEY"
     assert body["solver"] == "classical_exact_qubo_fallback"
     assert body["execution_mode"] == "local_classical_fallback"
     assert body["assigned_facility"]["facility_id"] == "facility-beta"

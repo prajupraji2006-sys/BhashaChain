@@ -1,5 +1,5 @@
 import React,{useEffect,useMemo,useState}from'react';
-import{api}from'./services/api.js';
+import{api,getApiBaseUrl}from'./services/api.js';
 
 const KAGGLE='https://www.kaggle.com/datasets/disisbig/kannada-news-dataset';
 const HF='https://huggingface.co/datasets/gaurvar/kannada_news';
@@ -62,7 +62,7 @@ export default function DatasetRightsLab({busy,run,result,onPrepareRegistration}
   if(!next){setFile(null);setRows([]);setColumns([]);setRowCount(0);setHash('');return}
   if(!next.name.toLowerCase().endsWith('.csv')){setLocalError('Choose a CSV file.');return}
   if(next.size>100*1024*1024){setLocalError('CSV is larger than the 100 MB browser preview limit.');return}
-  try{const parsed=parseCsv(await next.text());const digest=await fileSha256(next);setFile(next);setRows(parsed.data);setColumns(parsed.headers);setRowCount(parsed.data.length);setHash(digest);const apiBase=import.meta.env.VITE_API_BASE_URL||(import.meta.env.DEV?'http://localhost:8000':window.location.origin);const host=new URL(apiBase,window.location.origin).hostname;setStoreOriginal(host==='localhost'||host==='127.0.0.1'||host==='::1');setEvidence(current=>({...current,dataset_name:current.dataset_name||next.name,source_url:sourceUrl,evidence_timestamp:new Date().toISOString()}))}
+  try{const parsed=parseCsv(await next.text());const digest=await fileSha256(next);setFile(next);setRows(parsed.data);setColumns(parsed.headers);setRowCount(parsed.data.length);setHash(digest);const host=new URL(getApiBaseUrl(),window.location.origin).hostname;setStoreOriginal(host==='localhost'||host==='127.0.0.1'||host==='::1');setEvidence(current=>({...current,dataset_name:current.dataset_name||next.name,source_url:sourceUrl,evidence_timestamp:new Date().toISOString()}))}
   catch(e){setFile(null);setLocalError(e.message)}
  }
  const datasetId=hash?`kn-news-${hash.slice(0,12)}`:'';

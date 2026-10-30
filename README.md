@@ -109,34 +109,8 @@ The additive SQLite migration creates `rights_lab_datasets` and `rights_lab_deci
 
 ## Hosting
 
-`netlify.toml` prepares the React website for Netlify; `render.yaml` prepares the FastAPI service for Render. No account is connected and nothing has been deployed publicly yet. Set Netlify's `VITE_API_BASE_URL` to the deployed API URL, and set the API's `CORS_ORIGINS` to the Netlify website origin. Never expose API tokens or wallet keys as `VITE_` variables. The included Render free service has ephemeral storage; choose a durable database before storing production records. See [docs/evidence-matrix.md](docs/evidence-matrix.md) and [docs/judge-qa.md](docs/judge-qa.md) for verified status and judge answers.
+`netlify.toml` prepares the React website for Netlify; `render.yaml` prepares the FastAPI service for Render. The current deployment configuration is an explicitly off-chain demo on Render's free service: SQLite storage is ephemeral and there is no public contract deployment. The frontend requires Netlify's `VITE_API_BASE_URL` to point to the deployed backend, and Render's `CORS_ORIGINS` must contain the exact deployed frontend origin. Never expose API tokens or wallet keys as `VITE_` variables. See [docs/deployment.md](docs/deployment.md) for exact dashboard instructions, persistence limitations, environment variables, and verification steps.
 
-### Backend environment variables
+### Backend and frontend deployment
 
-Use `.env.example` as the local template. For a separately hosted backend, configure values through the host's environment settings; do not commit `.env` or put backend secrets in Netlify variables.
-
-| Variable | Required use | Notes |
-| --- | --- | --- |
-| `APP_ENV` | Always | Set `production` on the host; production write routes require authentication. |
-| `API_ACCESS_TOKEN` | Production | Strong random server-side token; send only to the backend over HTTPS. |
-| `ISSUER_SIGNING_SECRET` | Always | Strong persistent server-side signing secret. Changing it invalidates verification of existing locally signed records. |
-| `ISSUER_KEY_ID` | Optional | Stable identifier for the local signing key. |
-| `TRUSTED_ISSUER_PUBLIC_KEYS_JSON` | Optional | JSON mapping of trusted issuer key IDs to public keys. |
-| `CORS_ORIGINS` | Production | Comma-separated exact website origins, including scheme; configure the deployed Netlify origin. |
-| `DATABASE_PATH` | Production with disk | Set to `/var/data/bhashachain.db` when a Render disk is mounted at `/var/data`. Without it, SQLite defaults to an ephemeral project path. `DATABASE_URL` supports SQLite paths only. |
-| `BLOCKCHAIN_MODE` | Always | Render sets `required`; keep this mode for production rights checks and writes. |
-| `BLOCKCHAIN_RPC_URL`, `BLOCKCHAIN_CHAIN_ID`, `RIGHTS_LEDGER_ADDRESS` | Required chain mode | Must identify the already deployed, reachable production EVM ledger, not local Hardhat. |
-| `BLOCKCHAIN_PRIVATE_KEY` or `BLOCKCHAIN_SENDER_ADDRESS` | Required chain writes | The backend signer must be authorized as a provider on the contract. Keep any private key in Render's secret environment, never in the browser. |
-| `QPIAI_OPT_API_KEY` | Optional | Enables authenticated local QpiAI Opt; hosted platform solving is not enabled by this configuration. |
-| `QCLOUD_API_KEY` | Optional | Quantum integration credential; configure only when those features are intentionally used. |
-
-The current `render.yaml` uses a free service and does not provision durable SQLite storage. Render services have ephemeral filesystems, so restarts, spin-downs, or redeploys can lose registry, audit, and decision data. The app uses SQLite only; it does not currently accept a PostgreSQL URL. Before production use, choose one of these paths:
-
-- **Persistent disk:** upgrade the Render web service to a paid plan, attach a disk mounted at `/var/data`, then set `DATABASE_PATH=/var/data/bhashachain.db` in the Render environment. Only files under the mount path persist. Add backups and test restore before storing important records.
-- **Managed PostgreSQL:** the current backend cannot use it directly. A deliberate database-layer migration from SQLite to PostgreSQL, migration of existing data, and regression tests are required before configuring a PostgreSQL connection URL. Do not put a PostgreSQL URL into `DATABASE_URL` today; the application interprets it as a local SQLite path.
-
-The blueprint sets `BLOCKCHAIN_MODE=required` so chain-dependent decisions and writes fail closed when the ledger is missing or unavailable. Production backend configuration also rejects loopback RPC endpoints and Hardhat chain ID `31337`. After selecting durable storage, configure `DATABASE_PATH=/var/data/bhashachain.db` if using the disk instructions above. Configure `BLOCKCHAIN_RPC_URL`, `BLOCKCHAIN_CHAIN_ID`, `RIGHTS_LEDGER_ADDRESS`, and either `BLOCKCHAIN_PRIVATE_KEY` or `BLOCKCHAIN_SENDER_ADDRESS` in Render's protected environment settings. The RPC and contract must refer to an already deployed, reachable non-local chain, and the transaction signer must already have provider permission on that contract. Do not use the local Hardhat RPC in production. With a required chain unavailable, local seeded/off-chain records are not verified and registration, updates, and revocation cannot be trusted. The `/health` endpoint reports chain state separately; `status: ok` means the API process and database are up, not that the chain is connected.
-
-In Render, create the web service from `render.yaml`, then set the manual variables under the service's Environment page. Keep `APP_ENV=production`; generate `API_ACCESS_TOKEN` and `ISSUER_SIGNING_SECRET` there or use Render's generated secret values. Set `CORS_ORIGINS` to the exact final Netlify origin (for example, `https://your-site.netlify.app`, without a trailing slash). Store RPC credentials and any provider private key only in Render's protected variables. Do not paste secrets into the Blueprint file or GitHub.
-
-`CORS_ORIGINS` and `QPIAI_OPT_API_KEY` are manual Render settings: enter the exact Netlify origin and, only if enabling the QpiAI local optimizer, configure its server-side credential. The blueprint installs the pinned QpiAI Opt adapter but does not enable hosted platform solving. Netlify must separately set `VITE_API_BASE_URL` to the backend HTTPS URL. `frontend/.env.production.example` is a placeholder, not a deployable URL.
+Use `.env.example` for local development; production secrets belong in the host's protected environment settings. The prepared public demo uses `BLOCKCHAIN_MODE=disabled` until an approved testnet contract and signer are configured. The Render free filesystem is ephemeral, so its SQLite records are not durable. See [docs/deployment.md](docs/deployment.md) for the full Render/Netlify setup, environment variable reference, health checks, and safe testnet requirements.

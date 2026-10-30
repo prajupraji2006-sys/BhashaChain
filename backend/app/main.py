@@ -11,6 +11,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from .config import API_ACCESS_TOKEN, APP_ENV, BLOCKCHAIN_MODE, CORS_ORIGINS, DATA_DIR
+from .db import connect as connect_database
 from .db import init_db, list_datasets, get_dataset, save_dataset, update_dataset, save_decision, update_decision, list_decisions, get_decision, save_audit_event, list_audit_events, verify_audit_chain, save_rights_lab_dataset, update_rights_lab_dataset, get_rights_lab_dataset, list_rights_lab_datasets, save_rights_lab_decision, list_rights_lab_decisions
 from .services.signature_service import sign_dataset
 from .services.rights_engine import evaluate, POLICY_VERSION
@@ -205,6 +206,16 @@ def evaluate_request(dataset,request):
 
 @app.get("/health")
 def health():
+    connection = None
+    try:
+        connection = connect_database()
+        connection.execute("SELECT 1").fetchone()
+    except sqlite3.Error as exc:
+        logging.getLogger(__name__).error("Database health check failed error_type=%s", type(exc).__name__)
+        raise HTTPException(503, "DATABASE_UNAVAILABLE") from exc
+    finally:
+        if connection is not None:
+            connection.close()
     chain={"status":"disabled","verified":False,"mode":"disabled"} if BLOCKCHAIN_MODE=="disabled" else blockchain_service.status()
     chain["mode"]=BLOCKCHAIN_MODE
     return {"status":"ok","database":"connected","blockchain":chain["status"],"blockchain_details":chain,"blockchain_mode":BLOCKCHAIN_MODE,"write_auth":"required" if API_ACCESS_TOKEN or APP_ENV=="production" else "local_open","opt":"configured" if os.getenv("QPIAI_OPT_API_KEY") else "not_configured","qcloud":"configured" if os.getenv("QCLOUD_API_KEY") else "not_configured"}

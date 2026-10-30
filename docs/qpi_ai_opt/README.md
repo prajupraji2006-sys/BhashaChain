@@ -34,25 +34,25 @@ Synthetic smoke-test request:
 
 Send it to `POST http://127.0.0.1:8000/api/qubo/dispatch` with `Content-Type: application/json`. Production calls must include the backend API bearer token when `API_ACCESS_TOKEN` is configured. The API validates identifiers, input counts, positive units/capacities, unique IDs, chemistry lists, and finite nonnegative costs. Invalid JSON or fields return HTTP 422.
 
-The actual local smoke-test response was HTTP 200:
+The first recorded local smoke-test attempt returned `AuthenticationError`; its evidence contains no upstream HTTP status or error code, so it cannot distinguish an invalid key from a revoked key. The configured key was later verified successfully using the SDK's credential-verification endpoint. The actual `qpiai-opt==0.0.9` local smoke-test response then returned HTTP 200:
 
 ```json
 {
-  "trace_id": "submission-live-fallback",
+  "trace_id": "real-qpi-local-296b4a3c0c0b",
   "status": "OPTIMAL",
-  "solver": "classical_exact_qubo_fallback",
-  "execution_mode": "local_classical_fallback",
+  "solver": "qpiai_opt",
+  "execution_mode": "local",
   "assigned_facility": {"facility_id": "facility-beta", "name": "Facility Beta"},
   "objective_value": 6.0,
-  "qpiai_opt": {"status": "failed", "execution_mode": "failed", "error_type": "AuthenticationError", "error_code": "QPIAI_LOCAL_SOLVER_ERROR", "sdk_version": "0.0.9"}
+  "qpiai_opt": {"status": "optimal", "execution_mode": "local", "termination": "optimal", "method": "exhaustive-enumeration", "sdk_version": "0.0.9"}
 }
 ```
 
-In that run the SDK was invoked in local-only mode, returned `AuthenticationError`, and was not reported as successful. The bounded classical fallback independently found Facility Beta with status `OPTIMAL`; the complete response, trace ID, request, and timestamp are in the JSONL record. This is not evidence of a QpiAI solve. The deterministic fixture at `backend/tests/fixtures/qpi_ai_opt_dispatch_synthetic.json` is synthetic and is marked as such.
+The SDK returned a usable QUBO result with `execution_mode="local"` and `termination="optimal"`. Its positional `solution` vector and named `variable_assignment` were captured in the JSONL evidence. The returned assignment was independently checked against the original chemistry and capacity constraints; its independently calculated cost was 6.0. The run used synthetic inputs, disabled platform execution, and submitted no hosted job. The deterministic fixture at `backend/tests/fixtures/qpi_ai_opt_dispatch_synthetic.json` remains synthetic and is marked as such.
 
 ## Logs and reproduction
 
-The endpoint writes `[QPI AI OPT]` timestamped console and file logs to `logs/qpi_ai_opt.log`. Entries include a safe trace ID, request counts and bounded parameters, solver status/identity, selected facility ID, and duration. Exception text, environment values, API keys, and headers are omitted. Synthetic test request/response evidence is stored as JSON Lines in `logs/qpi_ai_opt_test_data.jsonl`.
+The endpoint writes `[QPI AI OPT]` timestamped console and file logs to `logs/qpi_ai_opt.log`. Entries include a safe trace ID, request counts and bounded parameters, solver status/identity, selected facility ID, and duration. Exception text, environment values, API keys, and headers are omitted. Synthetic test request/response and real synthetic-input execution evidence are stored as JSON Lines in `logs/qpi_ai_opt_test_data.jsonl`; SDK results and verification/error metadata are redacted before storage.
 
 From the repository root, run:
 

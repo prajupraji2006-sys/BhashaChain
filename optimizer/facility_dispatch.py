@@ -7,6 +7,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 from time import perf_counter
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -164,14 +165,22 @@ def _qpiai_local(qubo, jobs, facilities, trace_id):
             return {"status": "failed", "execution_mode": execution_mode,
                     "error_code": "QPIAI_UNEXPECTED_EXECUTION_MODE", "sdk_version": _sdk_version()}
         info = result.info()
-        solution = result.solution
+        solution = result.variable_assignment
         if not isinstance(solution, Mapping) or not info.has_usable_solution:
             return {"status": "no_solution", "execution_mode": "local",
-                    "error_code": "QPIAI_NO_USABLE_LOCAL_SOLUTION", "sdk_version": _sdk_version()}
+                    "error_code": "QPIAI_NO_USABLE_LOCAL_SOLUTION", "termination": str(info.termination),
+                    "method": str(info.method), "sdk_version": _sdk_version()}
+        if set(solution) != set(qubo["variables"]) or any(
+            float(solution[name]) not in (0.0, 1.0) for name in qubo["variables"]
+        ):
+            return {"status": "invalid_solution", "execution_mode": "local",
+                    "error_code": "QPIAI_DISPATCH_RESULT_SHAPE_INVALID", "termination": str(info.termination),
+                    "method": str(info.method), "sdk_version": _sdk_version()}
         decoded = _decode_assignments(solution, jobs, facilities, qubo)
         if decoded is None:
             return {"status": "invalid_solution", "execution_mode": "local",
-                    "error_code": "QPIAI_DISPATCH_VALIDATION_FAILED", "sdk_version": _sdk_version()}
+                    "error_code": "QPIAI_DISPATCH_VALIDATION_FAILED", "termination": str(info.termination),
+                    "method": str(info.method), "sdk_version": _sdk_version()}
         termination = str(info.termination)
         status = "optimal" if "OPTIMAL" in termination.upper() else "feasible"
         return {"status": status, "solver": "qpiai_opt", "execution_mode": execution_mode,
@@ -181,10 +190,18 @@ def _qpiai_local(qubo, jobs, facilities, trace_id):
                 "variable_count": len(variables), "sdk_version": _sdk_version()}
     except Exception as exc:
         error_type = type(exc).__name__
+        error_status = getattr(exc, "status_code", None)
+        error_code = getattr(exc, "code", None)
+        safe_error_code = (
+            error_code if isinstance(error_code, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,80}", error_code)
+            else None
+        )
         log_dispatch(logging.WARNING, "QpiAI Opt local solver failed", trace_id,
-                     solver="qpiai_opt", error_type=error_type, execution_mode="local")
+                     solver="qpiai_opt", error_type=error_type, execution_mode="local",
+                     upstream_http_status=error_status, upstream_error_code=safe_error_code)
         return {"status": "failed", "execution_mode": "failed", "error_code": "QPIAI_LOCAL_SOLVER_ERROR",
-                "error_type": error_type, "sdk_version": _sdk_version()}
+                "error_type": error_type, "upstream_http_status": error_status,
+                "upstream_error_code": safe_error_code, "sdk_version": _sdk_version()}
 
 
 def solve_dispatch(payload, trace_id):

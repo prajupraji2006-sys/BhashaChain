@@ -8,6 +8,28 @@ def sample():
     d={"dataset_id":"x","content_hash":"a"*64,"language":"ta","licence_version":"1","issuer":"issuer","purposes":["research"],"regions":["IN"],"derivatives_allowed":False,"redistribution_allowed":False,"expires_at":"2030-01-01T00:00:00+00:00","licensing_cost":10,"active":True}
     d["signature"]=sign_dataset(d); return d
 
+def test_health_checks_sqlite_and_reports_disabled_chain(tmp_path,monkeypatch):
+    from backend.app import db, main
+    monkeypatch.setattr(db,"DB_PATH",tmp_path/"health.db")
+    monkeypatch.setattr(main,"BLOCKCHAIN_MODE","disabled")
+    with TestClient(app) as client:
+        response=client.get("/health")
+    assert response.status_code==200
+    assert response.json()["database"]=="connected"
+    assert response.json()["blockchain"]=="disabled"
+    assert response.json()["blockchain_details"]["verified"] is False
+
+def test_production_write_authentication_is_enforced(tmp_path,monkeypatch):
+    from backend.app import db, main
+    monkeypatch.setattr(db,"DB_PATH",tmp_path/"auth.db")
+    monkeypatch.setattr(main,"APP_ENV","production")
+    monkeypatch.setattr(main,"API_ACCESS_TOKEN","unit-test-token")
+    with TestClient(app) as client:
+        assert client.get("/api/auth/check").status_code==401
+        assert client.get("/api/auth/check",headers={"Authorization":"Bearer unit-test-token"}).status_code==200
+        assert client.post("/api/decisions/check",json={}).status_code==401
+        assert client.post("/api/decisions/check",json={},headers={"Authorization":"Bearer unit-test-token"}).status_code==422
+
 def test_valid_and_policy_rejections():
     d=sample(); assert check(d,{"purpose":"research","geography":"IN"})==[]
     assert d["record_schema_version"]==2 and d["signature_algorithm"]=="Ed25519" and d["record_id"]
@@ -33,13 +55,14 @@ def test_fail_closed_and_hash_version():
     incomplete={"dataset_id":"x"}; assert check(incomplete,{})==["MISSING_LICENCE_FIELDS"]
 
 def test_api_persists_decision_and_manifests(tmp_path,monkeypatch):
-    from backend.app import db, config
+    from backend.app import db, config, main
     monkeypatch.setattr(config,"DB_PATH",tmp_path/"api.db"); monkeypatch.setattr(db,"DB_PATH",tmp_path/"api.db")
+    monkeypatch.setattr(main,"BLOCKCHAIN_MODE","disabled")
     from backend.app.services import manifest_service
     monkeypatch.setattr(manifest_service,"MANIFEST_DIR",tmp_path/"manifests")
     with TestClient(app) as client:
         rows=client.get("/api/datasets").json(); assert rows
-        d=rows[0]
+        d=next(x for x in rows if x.get("active",True) and "commercial_training" in x["purposes"] and "IN" in x["regions"])
         out=client.post("/api/decisions/check",json={"dataset_id":d["dataset_id"],"purpose":"commercial_training","geography":"IN","content_hash":d["content_hash"],"licence_version":d["licence_version"]}).json()
         assert out["decision"]=="ACCEPT"
         assert out["signature_verification"]["verified"] is True
@@ -58,8 +81,9 @@ def test_api_persists_decision_and_manifests(tmp_path,monkeypatch):
         assert client.post("/api/datasets",json=registered.json()).status_code==409
 
 def test_optimizer_endpoint_filters_rights_and_reports_baseline(tmp_path,monkeypatch):
-    from backend.app import db, config
+    from backend.app import db, config, main
     monkeypatch.setattr(config,"DB_PATH",tmp_path/"opt.db"); monkeypatch.setattr(db,"DB_PATH",tmp_path/"opt.db")
+    monkeypatch.setattr(main,"BLOCKCHAIN_MODE","disabled")
     monkeypatch.delenv("QPIAI_OPT_API_KEY",raising=False)
     with TestClient(app) as client:
         response=client.post("/api/optimization/run",json={"languages":["bn","ta"],"budget":1000,"mandatory_dataset_ids":[],"geography":"IN","purpose":"commercial_training"})
