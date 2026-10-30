@@ -1,8 +1,10 @@
 export function getApiBaseUrl(){
- const configured=import.meta.env.VITE_API_BASE_URL?.trim();
- if(configured)return configured.replace(/\/+$/,'');
- if(import.meta.env.DEV)return 'http://localhost:8000';
- throw new Error('VITE_API_BASE_URL is not configured. Set it to the deployed FastAPI URL and rebuild the frontend.');
+ if(import.meta.env.DEV){
+  const configured=import.meta.env.VITE_API_BASE_URL?.trim();
+  if(configured)return configured.replace(/\/+$/,'');
+  return 'http://localhost:8000';
+ }
+ return '';
 }
 let accessToken='';
 export function setAccessToken(value){accessToken=value||''}

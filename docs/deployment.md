@@ -6,8 +6,8 @@ This guide describes the currently prepared **off-chain demo**. It does not clai
 
 - Render builds from the repository root with `pip install -r backend/requirements.txt -r backend/requirements-qpiai-opt.txt`, starts `backend.app.main:app` on Render's `$PORT`, and checks `/health`.
 - Production starts with `APP_ENV=production`, generated `API_ACCESS_TOKEN` and `ISSUER_SIGNING_SECRET`, and `BLOCKCHAIN_MODE=disabled`.
-- Netlify builds from `frontend/`, publishes `dist/`, and routes SPA paths to `index.html`.
-- The frontend requires `VITE_API_BASE_URL` in production. It has no production localhost or same-origin API fallback.
+- Netlify builds from `frontend/` and publishes `dist/`. Its `/api/*` and `/health` proxy rules forward to the Render service before the SPA fallback routes other paths to `index.html`.
+- Production frontend API calls use relative paths on the Netlify origin, so the browser does not call Render cross-origin. Local development continues to use `http://localhost:8000` by default; `VITE_API_BASE_URL` can override that development URL.
 
 ## 1. Deploy the backend on Render
 
@@ -24,10 +24,10 @@ This guide describes the currently prepared **off-chain demo**. It does not clai
 
 1. In Netlify, choose **Add new site → Import an existing project** and connect the same GitHub repository and branch.
 2. Use the existing `netlify.toml` settings: base directory `frontend`, build command `npm run build`, publish directory `dist`.
-3. Add the build environment variable `VITE_API_BASE_URL=https://<render-service>.onrender.com` using the actual Render URL from step 1. This is a public API URL, not a credential.
+3. Keep the production `VITE_API_BASE_URL` unset; production requests use the same-origin proxy in `netlify.toml`. The proxy targets the actual backend URL `https://bhashachain-api.onrender.com`.
 4. Deploy the site and record its HTTPS origin, for example `https://<site-name>.netlify.app`.
-5. In Render, replace the temporary `CORS_ORIGINS` value with that exact Netlify origin and save. Wait for Render to redeploy.
-6. If you add a custom Netlify domain later, update `CORS_ORIGINS` to include that exact origin, comma-separated with any other authorized origins.
+5. In Render, set `CORS_ORIGINS` to the exact Netlify origin (including `https://`, without a trailing slash) and wait for any configuration-triggered restart. CORS is not a substitute for API authentication; the same-origin proxy does not remove bearer-token checks.
+6. If you add another Netlify domain, update `CORS_ORIGINS` to include that exact origin, comma-separated with any other authorized origins.
 
 ## 3. Verify the connected public app
 
@@ -54,7 +54,7 @@ This guide describes the currently prepared **off-chain demo**. It does not clai
 | `DATABASE_PATH` or `DATABASE_URL` | Render, optional | `DATABASE_PATH` selects the SQLite file; `DATABASE_URL` also accepts SQLite paths only, not PostgreSQL URLs. The default file is ephemeral on this free deployment. |
 | `QPIAI_OPT_API_KEY` | Render, optional | Enables authenticated QpiAI Opt local solves. If absent or failing, fallback stays separately labeled. |
 | `QCLOUD_API_KEY` | Render, optional | Only for intentionally enabled QpiAI Quantum features; keep server-side. |
-| `VITE_API_BASE_URL` | Netlify build | Public HTTPS Render API base URL. Never put API tokens or private keys in Vite variables. |
+| `VITE_API_BASE_URL` | Local development, optional | Development API URL override. Production ignores this setting and uses same-origin Netlify proxy paths. Never put API tokens or private keys in Vite variables. |
 | `BLOCKCHAIN_RPC_URL`, `BLOCKCHAIN_CHAIN_ID`, `RIGHTS_LEDGER_ADDRESS` | Render, only after approved testnet setup | Identify the reachable non-local RPC and already deployed compatible ledger. Not needed in off-chain mode. |
 | `BLOCKCHAIN_PRIVATE_KEY` or `BLOCKCHAIN_SENDER_ADDRESS` | Render, only after approved testnet setup | Backend transaction signer. Keep private keys in Render secrets; a public sender address is not a signing credential. |
 
